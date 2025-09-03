@@ -170,6 +170,58 @@ def public_test():
         "supabase_url": SUPABASE_URL
     })
 
+# --- NEW ENDPOINT: Get Single Tender Text ---
+@app.route("/tender-text", methods=['GET'])
+@require_api_key
+def get_tender_text():
+    """
+    Yeh function 'bid_number' ke आधार par ek tender ka poora text laayega.
+    Example URL: /tender-text?bid_number=GEM/2025/B/123456
+    """
+    try:
+        # URL se 'bid_number' parameter lein
+        bid_number = request.args.get('bid_number')
+        
+        # Check karein ki bid_number diya gaya hai ya nahi
+        if not bid_number:
+            return jsonify({
+                "success": False,
+                "error": "bid_number parameter is required"
+            }), 400
+        
+        print(f"Searching for tender with bid_number: {bid_number}")
+        
+        # Database se sirf 'full_text' aur 'department' select karein
+        response = supabase.table("tenders").select("full_text, department, bid_number").eq("bid_number", bid_number).limit(1).execute()
+        
+        # Agar data nahi mila to error bhejein
+        if not response.data:
+            return jsonify({
+                "success": False,
+                "error": f"No tender found with bid_number: {bid_number}"
+            }), 404
+        
+        # Agar data mil gaya to use JSON format mein bhejein
+        tender_data = response.data[0]
+        print(f"Found tender: {tender_data.get('department', 'N/A')}")
+        
+        return jsonify({
+            "success": True,
+            "data": {
+                "bid_number": tender_data.get('bid_number'),
+                "department": tender_data.get('department'),
+                "full_text": tender_data.get('full_text', '')
+            }
+        })
+
+    except Exception as e:
+        # Agar koi aur error aata hai to use dikhayein
+        print(f"Error in get_tender_text: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 # --- Server ko Chalu Karna ---
 if __name__ == "__main__":
     # Get port from environment variable or use default
