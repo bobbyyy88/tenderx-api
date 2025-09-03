@@ -3,3 +3,4 @@ werkzeug==2.0.3
 flask-cors==3.0.10
 supabase==1.0.3
 gunicorn==20.1.0
+python-dotenv==0.19.0
