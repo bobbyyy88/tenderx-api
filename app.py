@@ -58,16 +58,15 @@ def extract_detail(text, pattern, default="Not found"):
 @require_api_key
 def get_tenders():
     """
-    Enhanced tender search with improved error handling and search capabilities.
+    A more robust tender search that falls back to simpler methods if text_search fails.
     """
     try:
         # Get query parameters
         limit = request.args.get('limit', 20, type=int)
         q = request.args.get('q')  # For keyword search
         bid_number = request.args.get('bid_number')  # For specific tender lookup
-        city = request.args.get('city')  # For city-specific search
         
-        # Define the columns to select (excluding large fields like full_text and embedding)
+        # Define the columns to select
         fields_to_select = (
             "bid_number, item_category, department, organization, quantity, status, "
             "closing_date, tender_amount, city, state, source_url"
@@ -76,28 +75,18 @@ def get_tenders():
         # Start building the query
         query = supabase.table('tenders').select(fields_to_select)
         
-        # Apply filters based on parameters
-        if q and len(q.strip()) > 1:  # Only search if query is meaningful
-            # Clean the query to handle potential typos or variations
-            clean_q = q.strip().lower()
-            
-            # Define which columns to search
-            search_columns = 'item_category,department,organization,city,state,status'
-            
-            # Format for Supabase text_search (words joined with OR operator)
-            formatted_query = ' | '.join(clean_q.split())
-            
-            # Apply the text search with English language rules
-            query = query.text_search(search_columns, formatted_query, config='english')
-            print(f"Searching for: '{formatted_query}' in columns: {search_columns}")
-        
-        # Filter by specific bid number if provided
+        # If we have a bid number, that's the simplest case
         if bid_number:
             query = query.eq("bid_number", bid_number)
+        
+        # If we have a search query, use a simpler approach with LIKE
+        elif q and len(q.strip()) > 1:
+            # Clean the query
+            clean_q = q.strip()
             
-        # Filter by city if provided
-        if city:
-            query = query.ilike("city", f"%{city}%")
+            # Use a simpler ILIKE search instead of text_search
+            # This is less efficient but more reliable
+            query = query.or_(f"item_category.ilike.%{clean_q}%,department.ilike.%{clean_q}%,organization.ilike.%{clean_q}%,city.ilike.%{clean_q}%")
         
         # Apply limit and execute
         response = query.limit(limit).execute()
@@ -115,13 +104,13 @@ def get_tenders():
         return jsonify({
             "success": True, 
             "count": len(tenders), 
-            "data": tenders,
-            "query": q or bid_number or city or "all"  # Include what was searched for
+            "data": tenders
         })
 
     except Exception as e:
         print(f"Error in get_tenders: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 # --- Detail Extractor Endpoint ---
 @app.route("/tender-extract-details", methods=['GET'])
@@ -254,3 +243,4 @@ def health_check():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
