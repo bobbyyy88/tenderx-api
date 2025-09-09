@@ -1,5 +1,5 @@
 import os
-import re # Import the regular expression module
+import re
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from functools import wraps
@@ -13,13 +13,7 @@ API_KEY = os.getenv("API_KEY", "tenderx_api_key_123")
 
 app = Flask(__name__)
 CORS(app)
-
-# --- Supabase Connection ---
-try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("Supabase connection successful!")
-except Exception as e:
-    print(f"Supabase connection error: {e}")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Security Middleware ---
 def require_api_key(f):
@@ -30,7 +24,7 @@ def require_api_key(f):
         return jsonify({"success": False, "error": "Unauthorized"}), 401
     return decorated
 
-# --- Helper Functions (keep as is) ---
+# --- Helper Functions ---
 def format_date(date_str):
     try:
         if not date_str: return None
@@ -47,101 +41,110 @@ def format_amount(amount):
         else: return f"₹{amount:,.2f}"
     except: return str(amount)
 
+def extract_detail(text, pattern, default="Not found"):
+    """Helper to run regex and return the first group or a default value."""
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip().replace('\n', ' ') if match and match.group(1) else default
+
 # --- API Endpoints ---
 
 @app.route("/tenders", methods=["GET"])
 @require_api_key
 def get_tenders():
-    """
-    Handles fetching tenders. Now supports generic keyword search via the 'q' parameter.
-    """
+    # This endpoint remains the same, for fast searching
     try:
-        limit = request.args.get('limit', 10, type=int)
-        q = request.args.get('q') # For generic keyword search
+        limit = request.args.get('limit', 20, type=int)
+        q = request.args.get('q')
         bid_number = request.args.get('bid_number')
-
-        # Define the columns for the list view to keep it fast
-        fields_to_select = (
-            "bid_number, item_category, department, organization, quantity, status, "
-            "closing_date, tender_amount, city, state, source_url"
-        )
         
-        query = supabase.table('tenders').select(fields_to_select).limit(limit)
+        fields_to_select = "bid_number, item_category, department, organization, quantity, status, closing_date, tender_amount, city, state, source_url"
+        query = supabase.table('tenders').select(fields_to_select)
         
-        # --- NEW: Full-Text Search Logic ---
         if q:
-            # Search across multiple relevant text columns
-            search_columns = 'item_category,department,organization,city,state'
-            # Supabase text_search uses '|' for OR logic between words
+            search_columns = 'item_category,department,organization,city,state,status'
             formatted_query = ' | '.join(q.split())
-            query = query.text_search(search_columns, formatted_query)
+            query = query.text_search(search_columns, formatted_query, config='english')
         
         if bid_number:
             query = query.eq("bid_number", bid_number)
 
-        response = query.execute()
+        response = query.limit(limit).execute()
         
         tenders = response.data
         for tender in tenders:
-            if 'closing_date' in tender and tender['closing_date']:
+            if tender.get('closing_date'):
                 tender['formatted_deadline'] = format_date(tender['closing_date'])
-            if 'tender_amount' in tender and tender['tender_amount']:
+            if tender.get('tender_amount'):
                 tender['formatted_amount'] = format_amount(tender['tender_amount'])
         
         return jsonify({"success": True, "count": len(tenders), "data": tenders})
-
     except Exception as e:
-        print(f"Error in get_tenders: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# --- NEW ENDPOINT: Extract EMD Amount ---
-@app.route("/tender-emd", methods=['GET'])
+# --- NEW: Detail Extractor Endpoint ---
+@app.route("/tender-extract-details", methods=['GET'])
 @require_api_key
-def get_tender_emd():
+def get_tender_extracted_details():
     """
-    Fetches the full_text of a tender and extracts the EMD amount.
+    Fetches the full_text of a tender and extracts a rich set of details using regex.
     """
+    bid_number = request.args.get('bid_number')
+    if not bid_number:
+        return jsonify({"success": False, "error": "bid_number parameter is required"}), 400
+
+    try:
+        response = supabase.table("tenders").select("full_text").eq("bid_number", bid_number).limit(1).execute()
+        if not response.data:
+            return jsonify({"success": False, "error": f"Tender not found: {bid_number}"}), 404
+        
+        full_text = response.data[0].get('full_text', '')
+        
+        # Define patterns for each piece of information
+        patterns = {
+            "emd_amount": r'(?:EMD Amount|Earnest Money Deposit|EMD)\D*?([\d,]+)',
+            "past_experience_years": r'Years of Past Experience Required[^\n]+\n([\w\s\(\)]+)',
+            "mse_exemption": r'MSE Exemption for.*?Turnover\n(Yes|No)',
+            "startup_exemption": r'Startup Exemption for.*?Turnover\n(Yes|No)',
+            "required_documents": r'Document required from seller[^\n]*\n([^\n]+)',
+            "show_docs_to_bidders": r'show documents uploaded by bidders to all bidders[^\n]*\n(Yes|No)',
+            "min_bids_for_extension": r'Minimum number of\s*bids required[^\n]*\n(\d+)',
+            "past_performance_pct": r'Past Performance[^\n]*\n(\d+\s*%)',
+            "ra_enabled": r'Bid to RA enabled[^\n]*\n(Yes|No)',
+            "ra_qualification_rule": r'RA Qualification Rule\n([^\n]+)',
+            "type_of_bid": r'Type of Bid[^\n]*\n([^\n]+)',
+            "tech_clarification_time": r'Time allowed for Technical Clarifications[^\n]*\n([^\n]+)',
+            "evaluation_method": r'Evaluation Method[^\n]*\n([^\n]+)',
+            "epbg_details": r'ePBG Detail[^\n]*\nAdvisory Bank[^\n]*\n([^\n]+)',
+            "beneficiary": r'Beneficiary\s*:\s*\n([^\n]+)',
+            "mse_purchase_preference": r'MSE Purchase Preference[^\n]*\n(Yes|No)',
+            "mii_purchase_preference": r'MII Purchase Preference[^\n]*\n(Yes|No)'
+        }
+        
+        extracted_data = {"bid_number": bid_number}
+        for key, pattern in patterns.items():
+            extracted_data[key] = extract_detail(full_text, pattern)
+            
+        return jsonify({"success": True, "data": extracted_data})
+
+    except Exception as e:
+        print(f"Error in /tender-extract-details: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# Keep your /tender-text endpoint as is
+@app.route("/tender-text", methods=['GET'])
+@require_api_key
+def get_tender_text():
+    # This function remains unchanged
     try:
         bid_number = request.args.get('bid_number')
         if not bid_number:
             return jsonify({"success": False, "error": "bid_number parameter is required"}), 400
-
-        # Fetch only the full_text to be efficient
-        response = supabase.table("tenders").select("full_text").eq("bid_number", bid_number).limit(1).execute()
-        
+        response = supabase.table("tenders").select("full_text, department").eq("bid_number", bid_number).limit(1).execute()
         if not response.data:
             return jsonify({"success": False, "error": f"No tender found with bid_number: {bid_number}"}), 404
-        
-        full_text = response.data[0].get('full_text', '')
-        
-        # Regex to find EMD Amount. Looks for keywords followed by numbers.
-        # This can be improved over time with more examples.
-        emd_match = re.search(r'(?:EMD Amount|Earnest Money Deposit|EMD)\D*([\d,]+)', full_text, re.IGNORECASE)
-        
-        emd_amount = None
-        if emd_match:
-            # The amount is in the first capturing group
-            emd_amount = emd_match.group(1)
-
-        if emd_amount:
-            return jsonify({
-                "success": True,
-                "data": {
-                    "bid_number": bid_number,
-                    "emd_amount": emd_amount
-                }
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "error": "EMD amount not found in the tender document."
-            }), 404
-
+        return jsonify({"success": True, "data": response.data[0]})
     except Exception as e:
-        print(f"Error in get_tender_emd: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-
-# Keep your other endpoints like /tender-text, /health, etc. as they are.
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
