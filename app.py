@@ -11,7 +11,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://plqaquatgjajignchswv.supabase.
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBscWFxdWF0Z2phamlnbmNoc3d2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MjMwNzc1NCwiZXhwIjoyMDY3ODgzNzU0fQ.nvPBCAgtwgJ6kGwd3ms9xm17rTlIFe6fEquroE1sjQE")
 API_KEY = os.getenv("API_KEY", "tenderx_api_key_123")
 
-# Create the Flask app
+# Create Flask app
 app = Flask(__name__)
 CORS(app)
 
@@ -55,16 +55,28 @@ def extract_detail(text, pattern, default="Not found"):
 
 # --- API Endpoints ---
 
+@app.route("/", methods=["GET"])
+def home():
+    """
+    Root endpoint that provides API information.
+    """
+    return jsonify({
+        "name": "TenderX API",
+        "status": "online",
+        "version": "1.0.0",
+        "endpoints": ["/tenders", "/tender-text", "/tender-extract-details", "/tender-emd", "/health"]
+    })
+
 @app.route("/tenders", methods=["GET"])
 @require_api_key
 def get_tenders():
     """
-    Ultra-simplified tender search that just returns tenders without complex filtering.
+    Simple tender search that returns tenders with basic filtering.
     """
     try:
         # Get query parameters
         limit = request.args.get('limit', 20, type=int)
-        bid_number = request.args.get('bid_number')  # For specific tender lookup
+        bid_number = request.args.get('bid_number')
         
         # Define the columns to select
         fields_to_select = (
