@@ -67,11 +67,12 @@ def home():
         "endpoints": ["/tenders", "/tender-text", "/tender-extract-details", "/tender-emd", "/health"]
     })
 
+# IMPORTANT: @require_api_key decorator removed from here
 @app.route("/tenders", methods=["GET"])
-@require_api_key
 def get_tenders():
     """
     Simple tender search that returns tenders with basic filtering.
+    Public endpoint - no API key required.
     """
     try:
         # Get query parameters
@@ -114,8 +115,8 @@ def get_tenders():
         print(f"Error in get_tenders: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+# Make these public too for easier testing
 @app.route("/tender-extract-details", methods=['GET'])
-@require_api_key
 def get_tender_extracted_details():
     """
     Fetches the full_text of a tender and extracts a rich set of details using regex.
@@ -163,7 +164,6 @@ def get_tender_extracted_details():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/tender-text", methods=['GET'])
-@require_api_key
 def get_tender_text():
     """
     Fetches the full text of a tender document.
@@ -185,7 +185,6 @@ def get_tender_text():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/tender-emd", methods=['GET'])
-@require_api_key
 def get_tender_emd():
     """
     Fetches the EMD amount from a tender's full text.
