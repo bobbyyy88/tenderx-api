@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from functools import wraps
@@ -67,11 +68,10 @@ def home():
         "endpoints": ["/tenders", "/tender-text", "/tender-extract-details", "/tender-emd", "/health"]
     })
 
-# IMPORTANT: @require_api_key decorator removed from here
 @app.route("/tenders", methods=["GET"])
 def get_tenders():
     """
-    Simple tender search that returns tenders with basic filtering.
+    Enhanced tender search that returns all fields from the database.
     Public endpoint - no API key required.
     """
     try:
@@ -79,11 +79,8 @@ def get_tenders():
         limit = request.args.get('limit', 20, type=int)
         bid_number = request.args.get('bid_number')
         
-        # Define the columns to select
-        fields_to_select = (
-            "bid_number, item_category, department, organization, quantity, status, "
-            "closing_date, tender_amount, city, state, source_url"
-        )
+        # Select all fields from the database
+        fields_to_select = "*"
         
         # Start building the query
         query = supabase.table('tenders').select(fields_to_select)
@@ -103,6 +100,48 @@ def get_tenders():
                 tender['formatted_deadline'] = format_date(tender['closing_date'])
             if tender.get('tender_amount'):
                 tender['formatted_amount'] = format_amount(tender['tender_amount'])
+            
+            # Parse JSON fields if they exist
+            try:
+                for field in ['emd_detail', 'epbg_detail', 'technical_specifications', 
+                             'consignees_reporting_officer_quantity', 
+                             'buyer_bid_specific_terms_conditions', 'pre_bid_details']:
+                    if tender.get(field) and isinstance(tender[field], str):
+                        try:
+                            tender[field] = json.loads(tender[field])
+                        except:
+                            pass
+            except Exception as json_error:
+                print(f"JSON parsing error: {json_error}")
+        
+        # If we have a bid number and full_text is available, extract additional details
+        if bid_number and tenders and 'full_text' in tenders[0] and tenders[0]['full_text']:
+            try:
+                full_text = tenders[0]['full_text']
+                
+                # Define patterns for extraction
+                patterns = {
+                    "emd_amount": r'(?:EMD Amount|Earnest Money Deposit|EMD)\D*?([\d,]+)',
+                    "past_experience_years": r'Years of Past Experience Required[^\n]+\n([\w\s\(\)]+)',
+                    "mse_exemption": r'MSE Exemption for.*?Turnover\n(Yes|No)',
+                    "startup_exemption": r'Startup Exemption for.*?Turnover\n(Yes|No)',
+                    "required_documents": r'Document required from seller[^\n]*\n([^\n]+)',
+                    "show_docs_to_bidders": r'show documents uploaded by bidders to all bidders[^\n]*\n(Yes|No)',
+                    "min_bids_for_extension": r'Minimum number of\s*bids required[^\n]*\n(\d+)',
+                    "past_performance_pct": r'Past Performance[^\n]*\n(\d+\s*%)',
+                    "ra_enabled": r'Bid to RA enabled[^\n]*\n(Yes|No)',
+                    "ra_qualification_rule": r'RA Qualification Rule\n([^\n]+)',
+                    "type_of_bid": r'Type of Bid[^\n]*\n([^\n]+)',
+                    "tech_clarification_time": r'Time allowed for Technical Clarifications[^\n]*\n([^\n]+)',
+                    "evaluation_method": r'Evaluation Method[^\n]*\n([^\n]+)'
+                }
+                
+                for key, pattern in patterns.items():
+                    value = extract_detail(full_text, pattern)
+                    if value != "Not found":
+                        tenders[0][key] = value
+            except Exception as extract_error:
+                print(f"Error extracting additional details: {extract_error}")
         
         # Return the results
         return jsonify({
@@ -115,7 +154,6 @@ def get_tenders():
         print(f"Error in get_tenders: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-# Make these public too for easier testing
 @app.route("/tender-extract-details", methods=['GET'])
 def get_tender_extracted_details():
     """
